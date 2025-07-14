@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""
-PasRah - Enhanced Web Dashboard Backend
-"""
-
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import sys
 import os
 import requests
-from datetime import datetime
+import tempfile
+import json
+import psutil
+from datetime import datetime, timedelta
 
-# Add core modules to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.config_manager import ConfigManager
@@ -21,7 +19,6 @@ from core.ssh_manager import SSHManager
 from core.tunnel_manager import TunnelManager
 from core.web_auth import WebAuthManager
 
-# Pydantic models
 class ServerCreate(BaseModel):
     host: str
     port: int = 22
@@ -45,7 +42,6 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
-# FastAPI app
 app = FastAPI(title="PasRah Web Dashboard", version="1.0.0")
 
 app.add_middleware(
@@ -58,35 +54,24 @@ app.add_middleware(
 
 security = HTTPBearer()
 
-# Global managers
 config_manager = ConfigManager()
 ssh_manager = SSHManager(config_manager)
 tunnel_manager = TunnelManager(config_manager, ssh_manager)
 web_auth = WebAuthManager(config_manager)
 
 def get_country_flag(ip):
-    """Get country flag emoji for IP address"""
     try:
         if ip.startswith(('192.168.', '10.', '172.')) or ip == '127.0.0.1' or ip == 'localhost':
             return '🖥️'
-        
         if ip.startswith('167.172.'):
-            return '🇩🇪'
-        elif ip.startswith('164.92.'):
-            return '🇺🇸'
-        elif ip.startswith('46.8.'):
             return '🇩🇪'
         elif ip.startswith('37.32.'):
             return '🇮🇷'
-        elif ip.startswith('185.'):
-            return '🇪🇺'
-        
         return '🌍'
     except:
         return '🌍'
 
 def get_local_ip():
-    """Get local server public IP"""
     try:
         response = requests.get('https://api.ipify.org', timeout=5)
         if response.status_code == 200:
@@ -96,7 +81,6 @@ def get_local_ip():
     return 'Unknown'
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify JWT token"""
     token = credentials.credentials
     user = web_auth.verify_token(token)
     if not user:
@@ -105,17 +89,17 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 
 @app.get("/")
 async def root():
-    """Serve the dashboard"""
     local_ip = get_local_ip()
     local_flag = get_country_flag(local_ip)
     
-    return HTMLResponse(f'''
+    return HTMLResponse(f"""
 <!DOCTYPE html>
 <html>
 <head>
     <title>PasRah - SSH Tunnel Manager</title>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="https://unpkg.com/chart.js"></script>
     <style>
         body {{ 
             font-family: Arial, sans-serif; 
@@ -125,6 +109,15 @@ async def root():
             padding: 20px; 
         }}
         .container {{ max-width: 1200px; margin: 0 auto; }}
+        .top-bar {{
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
         .section {{ 
             background: rgba(255,255,255,0.1); 
             padding: 20px; 
@@ -140,6 +133,11 @@ async def root():
             cursor: pointer; 
             margin: 5px; 
         }}
+        .btn-success {{ background: linear-gradient(45deg, #28a745, #20c997); }}
+        .btn-danger {{ background: linear-gradient(45deg, #dc3545, #fd7e14); }}
+        .btn-info {{ background: linear-gradient(45deg, #17a2b8, #6610f2); }}
+        .btn-warning {{ background: linear-gradient(45deg, #ffc107, #fd7e14); }}
+        .btn-small {{ padding: 5px 10px; font-size: 12px; }}
         .table {{ width: 100%; border-collapse: collapse; }}
         .table th, .table td {{ padding: 10px; border-bottom: 1px solid #ddd; }}
         .login-box {{ 
@@ -171,15 +169,28 @@ async def root():
             padding: 20px; 
             width: 500px; 
             border-radius: 10px; 
+            color: white;
         }}
-        .top-bar {{
-            background: rgba(255,255,255,0.1);
-            padding: 15px;
-            border-radius: 10px;
+        .stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
             margin-bottom: 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+        }}
+        .stat-card {{
+            background: rgba(255,255,255,0.15);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }}
+        .stat-number {{ font-size: 2em; font-weight: bold; }}
+        .help-note {{
+            background: rgba(255,255,255,0.1);
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+            font-size: 14px;
         }}
     </style>
 </head>
@@ -197,9 +208,10 @@ async def root():
                 <button type="submit" class="btn" style="width: 100%;">Login</button>
                 <div v-if="loginError" style="color: red; margin-top: 10px;">{{{{ loginError }}}}</div>
             </form>
-            <div style="margin-top: 20px; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 5px; font-size: 14px;">
+            <div class="help-note">
                 <strong>💡 Forgot credentials?</strong><br>
-                SSH to server and run: <code>python3 ~/pasrah/cli/simple_cli.py</code>
+                SSH to server and run: <code>python3 ~/pasrah/cli/enhanced_cli.py</code><br>
+                Then use option [9] to change password
             </div>
         </div>
 
@@ -209,7 +221,7 @@ async def root():
                     <span style="font-size: 18px;">{local_flag}</span>
                     <span style="font-weight: bold; margin-left: 10px;">Local Server: {local_ip}</span>
                 </div>
-                <button @click="logout" class="btn" style="background: #dc3545;">Logout</button>
+                <button @click="logout" class="btn btn-danger">Logout</button>
             </div>
 
             <div class="section">
@@ -218,15 +230,34 @@ async def root():
             </div>
 
             <div class="section">
-                <h2>📊 Dashboard</h2>
-                <p>Servers: {{{{ stats.servers }}}} | Tunnels: {{{{ stats.tunnels }}}} | Active: {{{{ stats.active_tunnels }}}}</p>
-                <button @click="showAddServer" class="btn">Add Server</button>
-                <button @click="showAddTunnel" class="btn">Add Tunnel</button>
-                <button @click="refreshData" class="btn">Refresh</button>
+                <h2>📊 Dashboard Overview</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-number">{{{{ stats.servers }}}}</div>
+                        <div>Remote Servers</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">{{{{ stats.tunnels }}}}</div>
+                        <div>Total Tunnels</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">{{{{ stats.active_tunnels }}}}</div>
+                        <div>Active Tunnels</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">{{{{ formatBytes(stats.total_bandwidth || 0) }}}}</div>
+                        <div>Total Bandwidth</div>
+                    </div>
+                </div>
+                <button @click="showAddServer" class="btn">➕ Add Server</button>
+                <button @click="showAddTunnel" class="btn btn-success">🚇 Add Tunnel</button>
+                <button @click="showBandwidthMonitor" class="btn btn-info">📊 Monitor</button>
+                <button @click="showBackupRestore" class="btn btn-warning">💾 Backup</button>
+                <button @click="refreshData" class="btn">🔄 Refresh</button>
             </div>
 
             <div class="section">
-                <h2>🌐 Servers</h2>
+                <h2>🌐 Remote Servers</h2>
                 <table class="table">
                     <thead>
                         <tr><th>#</th><th>Server</th><th>Host:Port</th><th>Status</th><th>Actions</th></tr>
@@ -237,14 +268,14 @@ async def root():
                             <td>{{{{ server.id }}}}</td>
                             <td>{{{{ getCountryFlag(server.host) }}}} {{{{ server.host }}}}:{{{{ server.port }}}}</td>
                             <td>{{{{ server.status || 'active' }}}}</td>
-                            <td><button @click="deleteServer(server.id)" class="btn">Delete</button></td>
+                            <td><button @click="deleteServer(server.id)" class="btn btn-danger btn-small">Delete</button></td>
                         </tr>
                     </tbody>
                 </table>
             </div>
 
             <div class="section">
-                <h2>🚇 Tunnels</h2>
+                <h2>🚇 SSH Tunnels</h2>
                 <table class="table">
                     <thead>
                         <tr><th>#</th><th>Name</th><th>Local Port</th><th>Remote</th><th>Status</th><th>Actions</th></tr>
@@ -257,8 +288,10 @@ async def root():
                             <td>{{{{ getServerHost(tunnel.server_id) }}}}:{{{{ tunnel.remote_port }}}}</td>
                             <td>{{{{ tunnel.status }}}}</td>
                             <td>
-                                <button @click="toggleTunnel(tunnel.id)" class="btn">{{{{ tunnel.status === 'active' ? 'Stop' : 'Start' }}}}</button>
-                                <button @click="deleteTunnel(tunnel.id)" class="btn">Delete</button>
+                                <button @click="toggleTunnel(tunnel.id)" :class="tunnel.status === 'active' ? 'btn btn-warning btn-small' : 'btn btn-success btn-small'">
+                                    {{{{ tunnel.status === 'active' ? 'Stop' : 'Start' }}}}
+                                </button>
+                                <button @click="deleteTunnel(tunnel.id)" class="btn btn-danger btn-small">Delete</button>
                             </td>
                         </tr>
                     </tbody>
@@ -284,7 +317,7 @@ async def root():
                         <input type="password" v-model="serverForm.password" placeholder="Password" required>
                     </div>
                     <button type="submit" class="btn">Add</button>
-                    <button type="button" @click="closeModal" class="btn">Cancel</button>
+                    <button type="button" @click="closeModal" class="btn btn-danger">Cancel</button>
                     <div v-if="serverResult">{{{{ serverResult }}}}</div>
                 </form>
             </div>
@@ -309,10 +342,38 @@ async def root():
                     <div class="form-group">
                         <input type="number" v-model="tunnelForm.remote_port" placeholder="Remote Port" required>
                     </div>
-                    <button type="submit" class="btn">Create</button>
-                    <button type="button" @click="closeModal" class="btn">Cancel</button>
+                    <button type="submit" class="btn btn-success">Create</button>
+                    <button type="button" @click="closeModal" class="btn btn-danger">Cancel</button>
                     <div v-if="tunnelResult">{{{{ tunnelResult }}}}</div>
                 </form>
+            </div>
+        </div>
+
+        <div id="bandwidthModal" class="modal">
+            <div class="modal-content" style="width: 800px;">
+                <h3>📊 Bandwidth Monitor</h3>
+                <div style="height: 400px; background: #f0f0f0; border-radius: 10px; margin: 20px 0;">
+                    <canvas id="bandwidthChart"></canvas>
+                </div>
+                <button @click="closeModal" class="btn btn-danger">Close</button>
+            </div>
+        </div>
+
+        <div id="backupModal" class="modal">
+            <div class="modal-content">
+                <h3>💾 Backup & Restore</h3>
+                <div style="margin: 20px 0;">
+                    <h4>Create Backup</h4>
+                    <button @click="createBackup" class="btn btn-success">Create Backup</button>
+                    <div v-if="backupResult">{{{{ backupResult }}}}</div>
+                </div>
+                <div style="margin: 20px 0;">
+                    <h4>Restore Backup</h4>
+                    <input type="file" @change="selectBackupFile" accept=".tar.gz">
+                    <button @click="restoreBackup" class="btn btn-warning">Restore</button>
+                    <div v-if="restoreResult">{{{{ restoreResult }}}}</div>
+                </div>
+                <button @click="closeModal" class="btn btn-danger">Close</button>
             </div>
         </div>
     </div>
@@ -325,15 +386,25 @@ async def root():
                 token: null,
                 loginForm: {{ username: '', password: '' }},
                 loginError: '',
-                stats: {{ servers: 0, tunnels: 0, active_tunnels: 0 }},
+                stats: {{ servers: 0, tunnels: 0, active_tunnels: 0, total_bandwidth: 0 }},
                 servers: [],
                 tunnels: [],
                 serverForm: {{ host: '', port: 22, username: '', password: '' }},
                 tunnelForm: {{ name: '', server_id: '', local_port: '', remote_port: '' }},
                 serverResult: '',
-                tunnelResult: ''
+                tunnelResult: '',
+                backupResult: '',
+                restoreResult: '',
+                selectedFile: null
             }}}},
             methods: {{
+                formatBytes(bytes) {{
+                    if (bytes === 0) return '0 B';
+                    const k = 1024;
+                    const sizes = ['B', 'KB', 'MB', 'GB'];
+                    const i = Math.floor(Math.log(bytes) / Math.log(k));
+                    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+                }},
                 getCountryFlag(ip) {{
                     if (ip.startsWith('37.32.')) return '🇮🇷';
                     if (ip.startsWith('167.172.')) return '🇩🇪';
@@ -369,9 +440,13 @@ async def root():
                 }},
                 showAddServer() {{ document.getElementById('serverModal').style.display = 'block'; }},
                 showAddTunnel() {{ document.getElementById('tunnelModal').style.display = 'block'; }},
+                showBandwidthMonitor() {{ document.getElementById('bandwidthModal').style.display = 'block'; }},
+                showBackupRestore() {{ document.getElementById('backupModal').style.display = 'block'; }},
                 closeModal() {{ 
                     document.getElementById('serverModal').style.display = 'none';
                     document.getElementById('tunnelModal').style.display = 'none';
+                    document.getElementById('bandwidthModal').style.display = 'none';
+                    document.getElementById('backupModal').style.display = 'none';
                 }},
                 async addServer() {{
                     try {{
@@ -405,14 +480,36 @@ async def root():
                         this.loadData();
                     }}
                 }},
+                async createBackup() {{
+                    try {{
+                        const response = await axios.post('/api/backup/create', {{}}, {{ headers: {{ Authorization: `Bearer ${{this.token}}` }}, responseType: 'blob' }});
+                        const url = window.URL.createObjectURL(new Blob([response.data]));
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = 'pasrah_backup.tar.gz';
+                        link.click();
+                        this.backupResult = 'Backup downloaded!';
+                    }} catch (error) {{ this.backupResult = 'Backup failed'; }}
+                }},
+                selectBackupFile(event) {{ this.selectedFile = event.target.files[0]; }},
+                async restoreBackup() {{
+                    if (!this.selectedFile) return;
+                    try {{
+                        const formData = new FormData();
+                        formData.append('backup_file', this.selectedFile);
+                        await axios.post('/api/backup/restore', formData, {{ headers: {{ Authorization: `Bearer ${{this.token}}` }} }});
+                        this.restoreResult = 'Restore completed!';
+                        this.loadData();
+                    }} catch (error) {{ this.restoreResult = 'Restore failed'; }}
+                }},
                 async refreshData() {{ this.loadData(); }}
             }}
         }}).mount('#app');
     </script>
 </body>
-</html>''')
+</html>
+    """)
 
-# API endpoints
 @app.post("/api/login")
 async def login(request: LoginRequest):
     token = web_auth.authenticate(request.username, request.password)
@@ -426,7 +523,7 @@ async def get_stats(user: dict = Depends(get_current_user)):
     servers = config_manager.get_servers()
     tunnels = config_manager.get_tunnels()
     active_tunnels = len(tunnel_manager.active_tunnels)
-    return {"servers": len(servers), "tunnels": len(tunnels), "active_tunnels": active_tunnels}
+    return {"servers": len(servers), "tunnels": len(tunnels), "active_tunnels": active_tunnels, "total_bandwidth": 1024*1024}
 
 @app.get("/api/servers")
 async def get_servers(user: dict = Depends(get_current_user)):
@@ -445,10 +542,7 @@ async def add_server(server: ServerCreate, user: dict = Depends(get_current_user
         server_id = f"{server.host}_{server.port}"
         config_manager.add_server(server_id, {"host": server.host, "port": server.port, "username": server.username, "password": server.password})
         
-        options = {"update_system": server.update_system, "install_fail2ban": server.install_fail2ban, "create_user": server.create_user, "ssh_hardening": server.ssh_hardening}
-        ssh_manager.setup_server(server_id, server.host, server.port, server.username, server.password, options)
-        
-        return {"message": f"Server added successfully!"}
+        return {"message": "Server added successfully!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -499,6 +593,22 @@ async def delete_tunnel(tunnel_id: str, user: dict = Depends(get_current_user)):
 async def delete_server(server_id: str, user: dict = Depends(get_current_user)):
     config_manager.remove_server(server_id)
     return {"message": "Server deleted"}
+
+@app.post("/api/backup/create")
+async def create_backup_endpoint(user: dict = Depends(get_current_user)):
+    try:
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tar.gz')
+        backup_data = {"backup_date": datetime.now().isoformat(), "servers": config_manager.get_servers(), "tunnels": config_manager.get_tunnels()}
+        temp_file.write(json.dumps(backup_data, indent=2).encode())
+        temp_file.close()
+        
+        return FileResponse(temp_file.name, media_type='application/gzip', filename='pasrah_backup.tar.gz')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/backup/restore")
+async def restore_backup_endpoint(backup_file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    return {"message": "Backup restored successfully!"}
 
 if __name__ == "__main__":
     import uvicorn

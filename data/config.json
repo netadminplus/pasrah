@@ -11,21 +11,21 @@
       "added_date": "2025-07-14T13:59:01.982444",
       "last_check": "2025-07-14T13:59:05.495632",
       "tunnels": [
-        "test_444"
+        "1_4444"
       ]
     }
   },
   "tunnels": {
-    "test_444": {
-      "id": "test_444",
-      "name": "test",
+    "1_4444": {
+      "id": "1_4444",
+      "name": "1",
       "server_id": "167.172.165.40_22",
-      "local_port": 444,
-      "remote_port": 444,
+      "local_port": 4444,
+      "remote_port": 4444,
       "remote_host": "localhost",
-      "status": "inactive",
-      "created_date": "2025-07-14T14:37:40.185165",
-      "pid": null,
+      "status": "active",
+      "created_date": "2025-07-14T19:19:40.995451",
+      "pid": 25390,
       "auto_start": true,
       "description": ""
     }
