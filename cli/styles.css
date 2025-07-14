@@ -1,0 +1,128 @@
+/* PasRah Terminal UI Styles */
+
+.title {
+    text-align: center;
+    text-style: bold;
+    color: cyan;
+    margin: 1;
+}
+
+.subtitle {
+    text-style: bold;
+    color: yellow;
+    margin: 1 0;
+}
+
+.card-title {
+    text-style: bold;
+    color: green;
+    text-align: center;
+}
+
+.stat-number {
+    text-align: center;
+    text-style: bold;
+    color: white;
+    background: blue;
+    margin: 1;
+}
+
+.stat-card {
+    border: solid green;
+    width: 1fr;
+    height: 5;
+    margin: 1;
+}
+
+.stats-row {
+    height: 7;
+    margin: 1;
+}
+
+.label {
+    width: 15;
+    text-align: right;
+    margin: 0 1;
+}
+
+.input-row {
+    height: 3;
+    margin: 1;
+}
+
+.button-row {
+    height: 3;
+    margin: 1;
+    align: center middle;
+}
+
+.tab-header {
+    height: 3;
+    margin: 1;
+}
+
+.tab-container {
+    margin: 1;
+}
+
+.help-content {
+    margin: 2;
+    padding: 1;
+}
+
+.dashboard-container {
+    margin: 1;
+}
+
+.quick-actions {
+    margin: 1;
+}
+
+.activity-container {
+    height: 10;
+    margin: 1;
+}
+
+.add-server-container {
+    margin: 1;
+    padding: 1;
+}
+
+.add-tunnel-container {
+    margin: 1;
+    padding: 1;
+}
+
+.report-container {
+    height: 20;
+    margin: 1;
+}
+
+.settings-container {
+    margin: 1;
+}
+
+DataTable {
+    margin: 1;
+}
+
+TextArea {
+    margin: 1;
+    min-height: 5;
+}
+
+Button {
+    margin: 0 1;
+}
+
+Input {
+    margin: 0 1;
+}
+
+Footer {
+    background: blue;
+}
+
+Header {
+    background: green;
+}

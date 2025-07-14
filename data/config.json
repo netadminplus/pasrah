@@ -1,0 +1,53 @@
+{
+  "version": "1.0.0",
+  "servers": {
+    "167.172.165.40_22": {
+      "id": "167.172.165.40_22",
+      "host": "167.172.165.40",
+      "port": 22,
+      "username": "root",
+      "password_hash": "d5d18f3789c9b0cf7648e6af69ef41bb14035d68b7e77af5f01284f8d18cfd3f",
+      "status": "active",
+      "added_date": "2025-07-14T13:59:01.982444",
+      "last_check": "2025-07-14T13:59:05.495632",
+      "tunnels": [
+        "test_444"
+      ]
+    }
+  },
+  "tunnels": {
+    "test_444": {
+      "id": "test_444",
+      "name": "test",
+      "server_id": "167.172.165.40_22",
+      "local_port": 444,
+      "remote_port": 444,
+      "remote_host": "localhost",
+      "status": "inactive",
+      "created_date": "2025-07-14T14:37:40.185165",
+      "pid": null,
+      "auto_start": true,
+      "description": ""
+    }
+  },
+  "settings": {
+    "theme": "dark",
+    "language": "en",
+    "auto_backup": true,
+    "backup_interval": 24,
+    "max_logs": 1000,
+    "ssh_timeout": 30,
+    "tunnel_check_interval": 60,
+    "web_port": 8080,
+    "enable_bandwidth_monitoring": true
+  },
+  "ssh_keys": {
+    "private_key_path": "/root/pasrah/.ssh/id_ed25519_pasrah",
+    "public_key_path": "/root/pasrah/.ssh/id_ed25519_pasrah.pub"
+  },
+  "web_auth": {
+    "username": "ramtin",
+    "password_hash": "faf927bf23a0541dc1e3fa9b9e44ff31:8befdcef502278e9662862e5c6d8be6425ac459dd05a17554dcf12d6a390137c",
+    "created_at": 1752493719.5524335
+  }
+}
