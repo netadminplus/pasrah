@@ -35,6 +35,7 @@ class TunnelCreate(BaseModel):
     local_port: int
     remote_port: int
     remote_host: str = "localhost"
+    tunnel_type: str = "tcp"  # tcp or udp
     description: str = ""
     auto_start: bool = True
 
@@ -67,6 +68,8 @@ def get_country_flag(ip):
             return '🇩🇪'
         elif ip.startswith('37.32.'):
             return '🇮🇷'
+        elif ip.startswith('185.'):
+            return '🇪🇺'
         return '🌍'
     except:
         return '🌍'
@@ -139,7 +142,7 @@ async def root():
         .btn-warning {{ background: linear-gradient(45deg, #ffc107, #fd7e14); }}
         .btn-small {{ padding: 5px 10px; font-size: 12px; }}
         .table {{ width: 100%; border-collapse: collapse; }}
-        .table th, .table td {{ padding: 10px; border-bottom: 1px solid #ddd; }}
+        .table th, .table td {{ padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }}
         .login-box {{ 
             max-width: 400px; 
             margin: 100px auto; 
@@ -153,7 +156,9 @@ async def root():
             padding: 8px; 
             border: 1px solid #ddd; 
             border-radius: 4px; 
+            color: #333;
         }}
+        .form-group label {{ display: block; margin-bottom: 5px; font-weight: bold; }}
         .modal {{ 
             display: none; 
             position: fixed; 
@@ -162,14 +167,17 @@ async def root():
             width: 100%; 
             height: 100%; 
             background: rgba(0,0,0,0.5); 
+            z-index: 1000;
         }}
         .modal-content {{ 
             background: rgba(30,60,114,0.95); 
-            margin: 10% auto; 
+            margin: 5% auto; 
             padding: 20px; 
             width: 500px; 
             border-radius: 10px; 
             color: white;
+            max-height: 80vh;
+            overflow-y: auto;
         }}
         .stats-grid {{
             display: grid;
@@ -192,6 +200,48 @@ async def root():
             border-radius: 5px;
             font-size: 14px;
         }}
+        .tunnel-type-badge {{
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }}
+        .tcp-badge {{ background: #007bff; }}
+        .udp-badge {{ background: #28a745; }}
+        .status-badge {{
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+        }}
+        .status-active {{ background: #28a745; }}
+        .status-inactive {{ background: #6c757d; }}
+        .status-error {{ background: #dc3545; }}
+        .radio-group {{
+            display: flex;
+            gap: 15px;
+            margin: 10px 0;
+        }}
+        .radio-item {{
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }}
+        .error-message {{
+            color: #ff6b6b;
+            background: rgba(255,107,107,0.1);
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }}
+        .success-message {{
+            color: #51cf66;
+            background: rgba(81,207,102,0.1);
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }}
     </style>
 </head>
 <body>
@@ -206,7 +256,7 @@ async def root():
                     <input type="password" v-model="loginForm.password" placeholder="Password" required>
                 </div>
                 <button type="submit" class="btn" style="width: 100%;">Login</button>
-                <div v-if="loginError" style="color: red; margin-top: 10px;">{{{{ loginError }}}}</div>
+                <div v-if="loginError" class="error-message">{{{{ loginError }}}}</div>
             </form>
             <div class="help-note">
                 <strong>💡 Forgot credentials?</strong><br>
@@ -225,8 +275,8 @@ async def root():
             </div>
 
             <div class="section">
-                <h1>🚇 PasRah - SSH Tunnel Manager</h1>
-                <p>Making Connections Possible Worldwide</p>
+                <h1>🚇 PasRah - SSH Tunnel Manager v1.0</h1>
+                <p>Making Connections Possible Worldwide | TCP & UDP Support</p>
             </div>
 
             <div class="section">
@@ -260,14 +310,15 @@ async def root():
                 <h2>🌐 Remote Servers</h2>
                 <table class="table">
                     <thead>
-                        <tr><th>#</th><th>Server</th><th>Host:Port</th><th>Status</th><th>Actions</th></tr>
+                        <tr><th>#</th><th>Server ID</th><th>Host:Port</th><th>Status</th><th>Tunnels</th><th>Actions</th></tr>
                     </thead>
                     <tbody>
                         <tr v-for="(server, index) in servers" :key="server.id">
                             <td>{{{{ index + 1 }}}}</td>
                             <td>{{{{ server.id }}}}</td>
                             <td>{{{{ getCountryFlag(server.host) }}}} {{{{ server.host }}}}:{{{{ server.port }}}}</td>
-                            <td>{{{{ server.status || 'active' }}}}</td>
+                            <td><span :class="'status-badge status-' + (server.status || 'active')">{{{{ server.status || 'active' }}}}</span></td>
+                            <td>{{{{ getServerTunnelCount(server.id) }}}}</td>
                             <td><button @click="deleteServer(server.id)" class="btn btn-danger btn-small">Delete</button></td>
                         </tr>
                     </tbody>
@@ -275,80 +326,157 @@ async def root():
             </div>
 
             <div class="section">
-                <h2>🚇 SSH Tunnels</h2>
+                <h2>🚇 SSH Tunnels (TCP/UDP)</h2>
                 <table class="table">
                     <thead>
-                        <tr><th>#</th><th>Name</th><th>Local Port</th><th>Remote</th><th>Status</th><th>Actions</th></tr>
+                        <tr><th>#</th><th>Name</th><th>Type</th><th>Local Port</th><th>Remote</th><th>Status</th><th>Actions</th></tr>
                     </thead>
                     <tbody>
                         <tr v-for="(tunnel, index) in tunnels" :key="tunnel.id">
                             <td>{{{{ index + 1 }}}}</td>
                             <td>{{{{ tunnel.name }}}}</td>
+                            <td><span :class="'tunnel-type-badge ' + (tunnel.tunnel_type || 'tcp') + '-badge'">{{{{ (tunnel.tunnel_type || 'tcp').toUpperCase() }}}}</span></td>
                             <td>{{{{ tunnel.local_port }}}}</td>
                             <td>{{{{ getServerHost(tunnel.server_id) }}}}:{{{{ tunnel.remote_port }}}}</td>
-                            <td>{{{{ tunnel.status }}}}</td>
+                            <td><span :class="'status-badge status-' + tunnel.status">{{{{ tunnel.status }}}}</span></td>
                             <td>
                                 <button @click="toggleTunnel(tunnel.id)" :class="tunnel.status === 'active' ? 'btn btn-warning btn-small' : 'btn btn-success btn-small'">
                                     {{{{ tunnel.status === 'active' ? 'Stop' : 'Start' }}}}
                                 </button>
+                                <button @click="testTunnel(tunnel.id)" class="btn btn-info btn-small">Test</button>
                                 <button @click="deleteTunnel(tunnel.id)" class="btn btn-danger btn-small">Delete</button>
                             </td>
                         </tr>
                     </tbody>
                 </table>
             </div>
+
+            <div class="section">
+                <h2>📖 Quick Usage Guide</h2>
+                <div class="help-note">
+                    <h4>🎯 How to Use PasRah Tunnels:</h4>
+                    <strong>TCP Tunnels:</strong> Perfect for HTTP, HTTPS, SSH, databases<br>
+                    <strong>UDP Tunnels:</strong> Ideal for VPN, gaming, DNS, video streaming<br><br>
+                    
+                    <strong>📱 For Users:</strong><br>
+                    • Set proxy to: <code>YOUR-SERVER-IP:LOCAL-PORT</code><br>
+                    • Example: <code>{local_ip}:4444</code> (if you created a tunnel on port 4444)<br><br>
+                    
+                    <strong>🎮 Gaming/VPN:</strong><br>
+                    • Use UDP tunnels for better performance<br>
+                    • Point your game/VPN client to the local port<br><br>
+                    
+                    <strong>🌐 Web Browsing:</strong><br>
+                    • Use TCP tunnels with SOCKS proxy settings<br>
+                    • Configure browser proxy: SOCKS5 → Your-IP:Port
+                </div>
+            </div>
         </div>
 
-        <!-- Modals -->
+        <!-- Add Server Modal -->
         <div id="serverModal" class="modal">
             <div class="modal-content">
-                <h3>Add Server</h3>
+                <h3>➕ Add Remote Server</h3>
                 <form @submit.prevent="addServer">
                     <div class="form-group">
-                        <input type="text" v-model="serverForm.host" placeholder="Host/IP" required>
+                        <label>Host/IP Address:</label>
+                        <input type="text" v-model="serverForm.host" placeholder="46.8.233.208" required>
                     </div>
                     <div class="form-group">
-                        <input type="number" v-model="serverForm.port" placeholder="Port" required>
+                        <label>SSH Port:</label>
+                        <input type="number" v-model="serverForm.port" placeholder="22" required>
                     </div>
                     <div class="form-group">
-                        <input type="text" v-model="serverForm.username" placeholder="Username" required>
+                        <label>Username:</label>
+                        <input type="text" v-model="serverForm.username" placeholder="root" required>
                     </div>
                     <div class="form-group">
+                        <label>Password:</label>
                         <input type="password" v-model="serverForm.password" placeholder="Password" required>
                     </div>
-                    <button type="submit" class="btn">Add</button>
+                    
+                    <h4>🔧 Server Setup Options:</h4>
+                    <div class="form-group">
+                        <label><input type="checkbox" v-model="serverForm.update_system"> Update system packages</label>
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" v-model="serverForm.install_fail2ban"> Install fail2ban security</label>
+                    </div>
+                    <div class="form-group">
+                        <label><input type="checkbox" v-model="serverForm.ssh_hardening"> Apply SSH hardening</label>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-success">Add Server</button>
                     <button type="button" @click="closeModal" class="btn btn-danger">Cancel</button>
-                    <div v-if="serverResult">{{{{ serverResult }}}}</div>
+                    <div v-if="serverResult" :class="serverResult.includes('success') ? 'success-message' : 'error-message'">{{{{ serverResult }}}}</div>
                 </form>
             </div>
         </div>
 
+        <!-- Add Tunnel Modal -->
         <div id="tunnelModal" class="modal">
             <div class="modal-content">
-                <h3>Add Tunnel</h3>
+                <h3>🚇 Create New Tunnel</h3>
                 <form @submit.prevent="addTunnel">
                     <div class="form-group">
-                        <input type="text" v-model="tunnelForm.name" placeholder="Tunnel Name" required>
+                        <label>Tunnel Name:</label>
+                        <input type="text" v-model="tunnelForm.name" placeholder="My Tunnel" required>
                     </div>
+                    
                     <div class="form-group">
+                        <label>Tunnel Type:</label>
+                        <div class="radio-group">
+                            <div class="radio-item">
+                                <input type="radio" v-model="tunnelForm.tunnel_type" value="tcp" id="tcp-radio">
+                                <label for="tcp-radio">TCP (Web, SSH, Database)</label>
+                            </div>
+                            <div class="radio-item">
+                                <input type="radio" v-model="tunnelForm.tunnel_type" value="udp" id="udp-radio">
+                                <label for="udp-radio">UDP (Gaming, VPN, DNS)</label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Remote Server:</label>
                         <select v-model="tunnelForm.server_id" required>
                             <option value="">Select Server</option>
-                            <option v-for="server in servers" :key="server.id" :value="server.id">{{{{ server.host }}}}</option>
+                            <option v-for="server in servers" :key="server.id" :value="server.id">{{{{ server.host }}}} ({{{{ server.id }}}})</option>
                         </select>
                     </div>
+                    
                     <div class="form-group">
-                        <input type="number" v-model="tunnelForm.local_port" placeholder="Local Port" required>
+                        <label>Local Port (Your Server):</label>
+                        <input type="number" v-model="tunnelForm.local_port" placeholder="4444" required>
                     </div>
+                    
                     <div class="form-group">
-                        <input type="number" v-model="tunnelForm.remote_port" placeholder="Remote Port" required>
+                        <label>Remote Port (Target):</label>
+                        <input type="number" v-model="tunnelForm.remote_port" placeholder="443" required>
                     </div>
-                    <button type="submit" class="btn btn-success">Create</button>
+                    
+                    <div class="form-group">
+                        <label>Remote Host:</label>
+                        <input type="text" v-model="tunnelForm.remote_host" placeholder="localhost">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Description (Optional):</label>
+                        <input type="text" v-model="tunnelForm.description" placeholder="What this tunnel is for">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label><input type="checkbox" v-model="tunnelForm.auto_start"> Auto-start tunnel</label>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-success">Create Tunnel</button>
                     <button type="button" @click="closeModal" class="btn btn-danger">Cancel</button>
-                    <div v-if="tunnelResult">{{{{ tunnelResult }}}}</div>
+                    <div v-if="tunnelResult" :class="tunnelResult.includes('success') ? 'success-message' : 'error-message'">{{{{ tunnelResult }}}}</div>
                 </form>
             </div>
         </div>
 
+        <!-- Bandwidth Monitor Modal -->
         <div id="bandwidthModal" class="modal">
             <div class="modal-content" style="width: 800px;">
                 <h3>📊 Bandwidth Monitor</h3>
@@ -359,19 +487,22 @@ async def root():
             </div>
         </div>
 
+        <!-- Backup & Restore Modal -->
         <div id="backupModal" class="modal">
             <div class="modal-content">
                 <h3>💾 Backup & Restore</h3>
                 <div style="margin: 20px 0;">
                     <h4>Create Backup</h4>
-                    <button @click="createBackup" class="btn btn-success">Create Backup</button>
-                    <div v-if="backupResult">{{{{ backupResult }}}}</div>
+                    <p>Download your complete PasRah configuration</p>
+                    <button @click="createBackup" class="btn btn-success">📥 Create & Download Backup</button>
+                    <div v-if="backupResult" :class="backupResult.includes('success') || backupResult.includes('downloaded') ? 'success-message' : 'error-message'">{{{{ backupResult }}}}</div>
                 </div>
                 <div style="margin: 20px 0;">
                     <h4>Restore Backup</h4>
-                    <input type="file" @change="selectBackupFile" accept=".tar.gz">
-                    <button @click="restoreBackup" class="btn btn-warning">Restore</button>
-                    <div v-if="restoreResult">{{{{ restoreResult }}}}</div>
+                    <p>Upload and restore a previous backup</p>
+                    <input type="file" @change="selectBackupFile" accept=".tar.gz,.json">
+                    <button @click="restoreBackup" class="btn btn-warning" :disabled="!selectedFile">📤 Restore Backup</button>
+                    <div v-if="restoreResult" :class="restoreResult.includes('success') || restoreResult.includes('completed') ? 'success-message' : 'error-message'">{{{{ restoreResult }}}}</div>
                 </div>
                 <button @click="closeModal" class="btn btn-danger">Close</button>
             </div>
@@ -389,8 +520,25 @@ async def root():
                 stats: {{ servers: 0, tunnels: 0, active_tunnels: 0, total_bandwidth: 0 }},
                 servers: [],
                 tunnels: [],
-                serverForm: {{ host: '', port: 22, username: '', password: '' }},
-                tunnelForm: {{ name: '', server_id: '', local_port: '', remote_port: '' }},
+                serverForm: {{ 
+                    host: '', 
+                    port: 22, 
+                    username: '', 
+                    password: '',
+                    update_system: false,
+                    install_fail2ban: false,
+                    ssh_hardening: false
+                }},
+                tunnelForm: {{ 
+                    name: '', 
+                    server_id: '', 
+                    local_port: '', 
+                    remote_port: '', 
+                    remote_host: 'localhost',
+                    tunnel_type: 'tcp',
+                    description: '',
+                    auto_start: true
+                }},
                 serverResult: '',
                 tunnelResult: '',
                 backupResult: '',
@@ -408,23 +556,32 @@ async def root():
                 getCountryFlag(ip) {{
                     if (ip.startsWith('37.32.')) return '🇮🇷';
                     if (ip.startsWith('167.172.')) return '🇩🇪';
+                    if (ip.startsWith('185.')) return '🇪🇺';
                     return '🌍';
                 }},
                 getServerHost(serverId) {{
                     const server = this.servers.find(s => s.id === serverId);
                     return server ? server.host : 'Unknown';
                 }},
+                getServerTunnelCount(serverId) {{
+                    return this.tunnels.filter(t => t.server_id === serverId).length;
+                }},
                 async login() {{
                     try {{
                         const response = await axios.post('/api/login', this.loginForm);
                         this.token = response.data.token;
                         this.isAuthenticated = true;
-                        this.loadData();
+                        this.loginError = '';
+                        await this.loadData();
                     }} catch (error) {{
-                        this.loginError = 'Login failed';
+                        this.loginError = 'Login failed - check your credentials';
                     }}
                 }},
-                logout() {{ this.isAuthenticated = false; this.token = null; }},
+                logout() {{ 
+                    this.isAuthenticated = false; 
+                    this.token = null; 
+                    this.loginError = '';
+                }},
                 async loadData() {{
                     const headers = {{ Authorization: `Bearer ${{this.token}}` }};
                     try {{
@@ -436,12 +593,27 @@ async def root():
                         this.stats = stats.data;
                         this.servers = Object.values(servers.data);
                         this.tunnels = Object.values(tunnels.data);
-                    }} catch (error) {{ console.error(error); }}
+                    }} catch (error) {{ 
+                        console.error('Failed to load data:', error);
+                        if (error.response?.status === 401) {{
+                            this.logout();
+                        }}
+                    }}
                 }},
-                showAddServer() {{ document.getElementById('serverModal').style.display = 'block'; }},
-                showAddTunnel() {{ document.getElementById('tunnelModal').style.display = 'block'; }},
+                showAddServer() {{ 
+                    this.serverResult = '';
+                    document.getElementById('serverModal').style.display = 'block'; 
+                }},
+                showAddTunnel() {{ 
+                    this.tunnelResult = '';
+                    document.getElementById('tunnelModal').style.display = 'block'; 
+                }},
                 showBandwidthMonitor() {{ document.getElementById('bandwidthModal').style.display = 'block'; }},
-                showBackupRestore() {{ document.getElementById('backupModal').style.display = 'block'; }},
+                showBackupRestore() {{ 
+                    this.backupResult = '';
+                    this.restoreResult = '';
+                    document.getElementById('backupModal').style.display = 'block'; 
+                }},
                 closeModal() {{ 
                     document.getElementById('serverModal').style.display = 'none';
                     document.getElementById('tunnelModal').style.display = 'none';
@@ -449,60 +621,147 @@ async def root():
                     document.getElementById('backupModal').style.display = 'none';
                 }},
                 async addServer() {{
+                    this.serverResult = 'Testing connection...';
                     try {{
-                        await axios.post('/api/servers', this.serverForm, {{ headers: {{ Authorization: `Bearer ${{this.token}}` }} }});
-                        this.loadData();
-                        this.closeModal();
-                    }} catch (error) {{ this.serverResult = 'Failed to add server'; }}
+                        const response = await axios.post('/api/servers', this.serverForm, {{ 
+                            headers: {{ Authorization: `Bearer ${{this.token}}` }} 
+                        }});
+                        this.serverResult = 'Server added successfully!';
+                        await this.loadData();
+                        setTimeout(() => this.closeModal(), 2000);
+                    }} catch (error) {{ 
+                        this.serverResult = error.response?.data?.detail || 'Failed to add server';
+                    }}
                 }},
                 async addTunnel() {{
+                    this.tunnelResult = 'Creating tunnel...';
                     try {{
-                        await axios.post('/api/tunnels', this.tunnelForm, {{ headers: {{ Authorization: `Bearer ${{this.token}}` }} }});
-                        this.loadData();
-                        this.closeModal();
-                    }} catch (error) {{ this.tunnelResult = 'Failed to create tunnel'; }}
+                        const response = await axios.post('/api/tunnels', this.tunnelForm, {{ 
+                            headers: {{ Authorization: `Bearer ${{this.token}}` }} 
+                        }});
+                        this.tunnelResult = 'Tunnel created successfully!';
+                        await this.loadData();
+                        setTimeout(() => this.closeModal(), 2000);
+                    }} catch (error) {{ 
+                        this.tunnelResult = error.response?.data?.detail || 'Failed to create tunnel';
+                    }}
                 }},
                 async toggleTunnel(id) {{
                     try {{
-                        await axios.post(`/api/tunnels/${{id}}/toggle`, {{}}, {{ headers: {{ Authorization: `Bearer ${{this.token}}` }} }});
-                        this.loadData();
-                    }} catch (error) {{ alert('Failed to toggle tunnel'); }}
+                        await axios.post(`/api/tunnels/${{id}}/toggle`, {{}}, {{ 
+                            headers: {{ Authorization: `Bearer ${{this.token}}` }} 
+                        }});
+                        await this.loadData();
+                    }} catch (error) {{ 
+                        alert('Failed to toggle tunnel: ' + (error.response?.data?.detail || 'Unknown error'));
+                    }}
+                }},
+                async testTunnel(id) {{
+                    try {{
+                        const response = await axios.post(`/api/tunnels/${{id}}/test`, {{}}, {{ 
+                            headers: {{ Authorization: `Bearer ${{this.token}}` }} 
+                        }});
+                        alert(response.data.message || 'Test completed');
+                    }} catch (error) {{ 
+                        alert('Test failed: ' + (error.response?.data?.detail || 'Unknown error'));
+                    }}
                 }},
                 async deleteServer(id) {{
-                    if (confirm('Delete server?')) {{
-                        await axios.delete(`/api/servers/${{id}}`, {{ headers: {{ Authorization: `Bearer ${{this.token}}` }} }});
-                        this.loadData();
+                    if (confirm('Delete this server? This will also delete all its tunnels.')) {{
+                        try {{
+                            await axios.delete(`/api/servers/${{id}}`, {{ 
+                                headers: {{ Authorization: `Bearer ${{this.token}}` }} 
+                            }});
+                            await this.loadData();
+                        }} catch (error) {{
+                            alert('Failed to delete server');
+                        }}
                     }}
                 }},
                 async deleteTunnel(id) {{
-                    if (confirm('Delete tunnel?')) {{
-                        await axios.delete(`/api/tunnels/${{id}}`, {{ headers: {{ Authorization: `Bearer ${{this.token}}` }} }});
-                        this.loadData();
+                    if (confirm('Delete this tunnel?')) {{
+                        try {{
+                            await axios.delete(`/api/tunnels/${{id}}`, {{ 
+                                headers: {{ Authorization: `Bearer ${{this.token}}` }} 
+                            }});
+                            await this.loadData();
+                        }} catch (error) {{
+                            alert('Failed to delete tunnel');
+                        }}
                     }}
                 }},
                 async createBackup() {{
+                    this.backupResult = 'Creating backup...';
                     try {{
-                        const response = await axios.post('/api/backup/create', {{}}, {{ headers: {{ Authorization: `Bearer ${{this.token}}` }}, responseType: 'blob' }});
+                        const response = await axios.post('/api/backup/create', {{}}, {{ 
+                            headers: {{ Authorization: `Bearer ${{this.token}}` }}, 
+                            responseType: 'blob' 
+                        }});
+                        
                         const url = window.URL.createObjectURL(new Blob([response.data]));
                         const link = document.createElement('a');
                         link.href = url;
-                        link.download = 'pasrah_backup.tar.gz';
+                        link.download = `pasrah_backup_${{new Date().toISOString().slice(0,10)}}.tar.gz`;
                         link.click();
-                        this.backupResult = 'Backup downloaded!';
-                    }} catch (error) {{ this.backupResult = 'Backup failed'; }}
+                        window.URL.revokeObjectURL(url);
+                        
+                        this.backupResult = 'Backup downloaded successfully!';
+                    }} catch (error) {{ 
+                        this.backupResult = 'Backup failed: ' + (error.response?.data?.detail || 'Unknown error');
+                    }}
                 }},
-                selectBackupFile(event) {{ this.selectedFile = event.target.files[0]; }},
+                selectBackupFile(event) {{ 
+                    this.selectedFile = event.target.files[0]; 
+                    this.restoreResult = this.selectedFile ? `Selected: ${{this.selectedFile.name}}` : '';
+                }},
                 async restoreBackup() {{
-                    if (!this.selectedFile) return;
+                    if (!this.selectedFile) {{
+                        this.restoreResult = 'Please select a backup file first';
+                        return;
+                    }}
+                    
+                    this.restoreResult = 'Restoring backup...';
                     try {{
                         const formData = new FormData();
                         formData.append('backup_file', this.selectedFile);
-                        await axios.post('/api/backup/restore', formData, {{ headers: {{ Authorization: `Bearer ${{this.token}}` }} }});
-                        this.restoreResult = 'Restore completed!';
-                        this.loadData();
-                    }} catch (error) {{ this.restoreResult = 'Restore failed'; }}
+                        
+                        await axios.post('/api/backup/restore', formData, {{ 
+                            headers: {{ 
+                                'Authorization': `Bearer ${{this.token}}`,
+                                'Content-Type': 'multipart/form-data'
+                            }} 
+                        }});
+                        
+                        this.restoreResult = 'Backup restored successfully!';
+                        await this.loadData();
+                    }} catch (error) {{ 
+                        this.restoreResult = 'Restore failed: ' + (error.response?.data?.detail || 'Unknown error');
+                    }}
                 }},
-                async refreshData() {{ this.loadData(); }}
+                async refreshData() {{ 
+                    await this.loadData(); 
+                }}
+            }},
+            mounted() {{
+                // Check if user is already logged in (optional token persistence)
+                const savedToken = localStorage.getItem('pasrah_token');
+                if (savedToken) {{
+                    this.token = savedToken;
+                    this.isAuthenticated = true;
+                    this.loadData().catch(() => {{
+                        localStorage.removeItem('pasrah_token');
+                        this.logout();
+                    }});
+                }}
+            }},
+            watch: {{
+                token(newToken) {{
+                    if (newToken) {{
+                        localStorage.setItem('pasrah_token', newToken);
+                    }} else {{
+                        localStorage.removeItem('pasrah_token');
+                    }}
+                }}
             }}
         }}).mount('#app');
     </script>
@@ -523,7 +782,12 @@ async def get_stats(user: dict = Depends(get_current_user)):
     servers = config_manager.get_servers()
     tunnels = config_manager.get_tunnels()
     active_tunnels = len(tunnel_manager.active_tunnels)
-    return {"servers": len(servers), "tunnels": len(tunnels), "active_tunnels": active_tunnels, "total_bandwidth": 1024*1024}
+    return {
+        "servers": len(servers), 
+        "tunnels": len(tunnels), 
+        "active_tunnels": active_tunnels, 
+        "total_bandwidth": 1024*1024
+    }
 
 @app.get("/api/servers")
 async def get_servers(user: dict = Depends(get_current_user)):
@@ -535,14 +799,39 @@ async def get_servers(user: dict = Depends(get_current_user)):
 @app.post("/api/servers")
 async def add_server(server: ServerCreate, user: dict = Depends(get_current_user)):
     try:
-        success, message = ssh_manager.test_connection(server.host, server.port, server.username, server.password)
+        # Test connection first
+        success, message = ssh_manager.test_connection(
+            server.host, server.port, server.username, server.password
+        )
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code=400, detail=f"Connection test failed: {message}")
         
+        # Setup server
         server_id = f"{server.host}_{server.port}"
-        config_manager.add_server(server_id, {"host": server.host, "port": server.port, "username": server.username, "password": server.password})
+        config_manager.add_server(server_id, {
+            "host": server.host, 
+            "port": server.port, 
+            "username": server.username, 
+            "password": server.password
+        })
         
-        return {"message": "Server added successfully!"}
+        # Configure server with options
+        options = {
+            "update_system": server.update_system,
+            "install_fail2ban": server.install_fail2ban,
+            "create_user": server.create_user,
+            "ssh_hardening": server.ssh_hardening
+        }
+        
+        setup_success, setup_message = ssh_manager.setup_server(
+            server_id, server.host, server.port, server.username, server.password, options
+        )
+        
+        if setup_success:
+            return {"message": f"Server added and configured successfully! {setup_message}"}
+        else:
+            return {"message": f"Server added but setup had issues: {setup_message}"}
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -553,18 +842,38 @@ async def get_tunnels(user: dict = Depends(get_current_user)):
         status = tunnel_manager.get_tunnel_status(tunnel_id)
         tunnel["status"] = status["status"]
         tunnel["id"] = tunnel_id
+        # Ensure tunnel_type is set (default to tcp for backwards compatibility)
+        if "tunnel_type" not in tunnel:
+            tunnel["tunnel_type"] = "tcp"
     return tunnels
 
 @app.post("/api/tunnels")
 async def add_tunnel(tunnel: TunnelCreate, user: dict = Depends(get_current_user)):
     try:
         tunnel_id = f"{tunnel.name}_{tunnel.local_port}".replace(" ", "_").lower()
-        config_manager.add_tunnel(tunnel_id, {"name": tunnel.name, "server_id": tunnel.server_id, "local_port": tunnel.local_port, "remote_port": tunnel.remote_port, "remote_host": tunnel.remote_host, "description": tunnel.description, "auto_start": tunnel.auto_start})
         
+        # Add tunnel configuration
+        config_manager.add_tunnel(tunnel_id, {
+            "name": tunnel.name,
+            "server_id": tunnel.server_id,
+            "local_port": tunnel.local_port,
+            "remote_port": tunnel.remote_port,
+            "remote_host": tunnel.remote_host,
+            "tunnel_type": tunnel.tunnel_type,
+            "description": tunnel.description,
+            "auto_start": tunnel.auto_start
+        })
+        
+        # Start tunnel if auto_start is enabled
         if tunnel.auto_start:
-            tunnel_manager.create_tunnel(tunnel_id)
-        
-        return {"message": "Tunnel created successfully!"}
+            success, message = tunnel_manager.create_tunnel(tunnel_id)
+            if success:
+                return {"message": f"Tunnel created and started successfully! {message}"}
+            else:
+                return {"message": f"Tunnel created but failed to start: {message}"}
+        else:
+            return {"message": "Tunnel created successfully! Use the Start button to activate it."}
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -573,42 +882,109 @@ async def toggle_tunnel(tunnel_id: str, user: dict = Depends(get_current_user)):
     try:
         status = tunnel_manager.get_tunnel_status(tunnel_id)
         if status["status"] == "active":
-            tunnel_manager.destroy_tunnel(tunnel_id)
+            success, message = tunnel_manager.destroy_tunnel(tunnel_id)
         else:
-            tunnel_manager.create_tunnel(tunnel_id)
-        return {"message": "Tunnel toggled"}
+            success, message = tunnel_manager.create_tunnel(tunnel_id)
+        
+        if success:
+            return {"message": message}
+        else:
+            raise HTTPException(status_code=500, detail=message)
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/tunnels/{tunnel_id}/test")
+async def test_tunnel(tunnel_id: str, user: dict = Depends(get_current_user)):
+    try:
+        success, message = tunnel_manager.test_tunnel_connectivity(tunnel_id)
+        return {"success": success, "message": message}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/tunnels/{tunnel_id}")
 async def delete_tunnel(tunnel_id: str, user: dict = Depends(get_current_user)):
     try:
-        tunnel_manager.destroy_tunnel(tunnel_id)
+        # Stop tunnel if running
+        if tunnel_id in tunnel_manager.active_tunnels:
+            tunnel_manager.destroy_tunnel(tunnel_id)
+        
+        # Remove from config
         config_manager.remove_tunnel(tunnel_id)
-        return {"message": "Tunnel deleted"}
+        return {"message": "Tunnel deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/servers/{server_id}")
 async def delete_server(server_id: str, user: dict = Depends(get_current_user)):
-    config_manager.remove_server(server_id)
-    return {"message": "Server deleted"}
+    try:
+        # Stop all tunnels for this server
+        tunnels = config_manager.get_tunnels()
+        for tunnel_id, tunnel in tunnels.items():
+            if tunnel["server_id"] == server_id:
+                if tunnel_id in tunnel_manager.active_tunnels:
+                    tunnel_manager.destroy_tunnel(tunnel_id)
+                config_manager.remove_tunnel(tunnel_id)
+        
+        # Remove server
+        config_manager.remove_server(server_id)
+        return {"message": "Server and all its tunnels deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/backup/create")
 async def create_backup_endpoint(user: dict = Depends(get_current_user)):
     try:
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.tar.gz')
-        backup_data = {"backup_date": datetime.now().isoformat(), "servers": config_manager.get_servers(), "tunnels": config_manager.get_tunnels()}
+        # Create backup data
+        backup_data = {
+            "backup_date": datetime.now().isoformat(),
+            "pasrah_version": "1.0.0",
+            "servers": config_manager.get_servers(),
+            "tunnels": config_manager.get_tunnels(),
+            "settings": config_manager.config.get("settings", {})
+        }
+        
+        # Create temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.json')
         temp_file.write(json.dumps(backup_data, indent=2).encode())
         temp_file.close()
         
-        return FileResponse(temp_file.name, media_type='application/gzip', filename='pasrah_backup.tar.gz')
+        return FileResponse(
+            temp_file.name, 
+            media_type='application/json', 
+            filename=f'pasrah_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/backup/restore")
 async def restore_backup_endpoint(backup_file: UploadFile = File(...), user: dict = Depends(get_current_user)):
-    return {"message": "Backup restored successfully!"}
+    try:
+        # Read backup file
+        content = await backup_file.read()
+        backup_data = json.loads(content.decode())
+        
+        # Validate backup format
+        if "servers" not in backup_data or "tunnels" not in backup_data:
+            raise HTTPException(status_code=400, detail="Invalid backup file format")
+        
+        # Stop all current tunnels
+        for tunnel_id in list(tunnel_manager.active_tunnels.keys()):
+            tunnel_manager.destroy_tunnel(tunnel_id)
+        
+        # Restore servers
+        for server_id, server_data in backup_data["servers"].items():
+            config_manager.add_server(server_id, server_data)
+        
+        # Restore tunnels
+        for tunnel_id, tunnel_data in backup_data["tunnels"].items():
+            config_manager.add_tunnel(tunnel_id, tunnel_data)
+        
+        return {"message": "Backup restored successfully!"}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON format in backup file")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

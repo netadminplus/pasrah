@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PasRah - SSH Tunnel Manager
-Configuration Manager Module
+Enhanced Configuration Manager Module with UDP Support
 """
 
 import json
@@ -43,7 +43,9 @@ class ConfigManager:
                 "ssh_timeout": 30,
                 "tunnel_check_interval": 60,  # seconds
                 "web_port": 8080,
-                "enable_bandwidth_monitoring": True
+                "enable_bandwidth_monitoring": True,
+                "support_udp_tunnels": True,  # NEW: UDP support flag
+                "socat_path": "/usr/bin/socat"  # NEW: Path to socat binary
             },
             "ssh_keys": {
                 "private_key_path": str(self.base_dir / ".ssh" / "id_ed25519_pasrah"),
@@ -68,7 +70,8 @@ class ConfigManager:
                 event_type TEXT NOT NULL,  -- connect, disconnect, error, data
                 message TEXT,
                 bytes_sent INTEGER DEFAULT 0,
-                bytes_received INTEGER DEFAULT 0
+                bytes_received INTEGER DEFAULT 0,
+                tunnel_type TEXT DEFAULT 'tcp'  -- NEW: Track tunnel type
             )
         ''')
         
@@ -90,7 +93,22 @@ class ConfigManager:
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 bytes_in INTEGER DEFAULT 0,
                 bytes_out INTEGER DEFAULT 0,
-                duration INTEGER DEFAULT 60  -- seconds
+                duration INTEGER DEFAULT 60,  -- seconds
+                tunnel_type TEXT DEFAULT 'tcp'  -- NEW: Track tunnel type
+            )
+        ''')
+        
+        # NEW: Table for tunnel process tracking
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tunnel_processes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tunnel_id TEXT NOT NULL UNIQUE,
+                main_pid INTEGER,
+                helper_pids TEXT,  -- JSON array of additional PIDs for UDP tunnels
+                tunnel_type TEXT DEFAULT 'tcp',
+                status TEXT DEFAULT 'unknown',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -106,13 +124,21 @@ class ConfigManager:
                 
                 # Merge with defaults (for new settings)
                 merged_config = self.default_config.copy()
-                merged_config.update(config)
+                self._deep_merge(merged_config, config)
                 return merged_config
             except Exception as e:
                 print(f"Error loading config: {e}")
                 return self.default_config.copy()
         else:
             return self.default_config.copy()
+    
+    def _deep_merge(self, base_dict: Dict, update_dict: Dict):
+        """Recursively merge dictionaries"""
+        for key, value in update_dict.items():
+            if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
+                self._deep_merge(base_dict[key], value)
+            else:
+                base_dict[key] = value
     
     def save_config(self) -> bool:
         """Save configuration to file"""
@@ -135,7 +161,11 @@ class ConfigManager:
             "status": "unknown",
             "added_date": datetime.now().isoformat(),
             "last_check": None,
-            "tunnels": []
+            "tunnels": [],
+            "capabilities": {
+                "socat_installed": False,  # NEW: Track if socat is available
+                "udp_support": False       # NEW: Track UDP capability
+            }
         }
         return self.save_config()
     
@@ -147,7 +177,7 @@ class ConfigManager:
         return False
     
     def add_tunnel(self, tunnel_id: str, tunnel_data: Dict) -> bool:
-        """Add a tunnel configuration"""
+        """Add a tunnel configuration with UDP support"""
         self.config["tunnels"][tunnel_id] = {
             "id": tunnel_id,
             "name": tunnel_data["name"],
@@ -155,11 +185,17 @@ class ConfigManager:
             "local_port": tunnel_data["local_port"],
             "remote_port": tunnel_data["remote_port"],
             "remote_host": tunnel_data.get("remote_host", "localhost"),
+            "tunnel_type": tunnel_data.get("tunnel_type", "tcp").lower(),  # NEW: tcp or udp
             "status": "inactive",
             "created_date": datetime.now().isoformat(),
             "pid": None,
             "auto_start": tunnel_data.get("auto_start", True),
-            "description": tunnel_data.get("description", "")
+            "description": tunnel_data.get("description", ""),
+            "process_info": {  # NEW: Enhanced process tracking
+                "main_pid": None,
+                "helper_pids": [],
+                "intermediate_ports": []  # For UDP tunnels
+            }
         }
         
         # Add tunnel to server's tunnel list
@@ -178,6 +214,9 @@ class ConfigManager:
             if server_id in self.config["servers"]:
                 if tunnel_id in self.config["servers"][server_id]["tunnels"]:
                     self.config["servers"][server_id]["tunnels"].remove(tunnel_id)
+            
+            # Clean up process tracking
+            self._remove_tunnel_process_info(tunnel_id)
             
             del self.config["tunnels"][tunnel_id]
             return self.save_config()
@@ -200,11 +239,15 @@ class ConfigManager:
         return self.config["tunnels"].get(tunnel_id)
     
     def update_tunnel_status(self, tunnel_id: str, status: str, pid: Optional[int] = None):
-        """Update tunnel status"""
+        """Update tunnel status with enhanced process tracking"""
         if tunnel_id in self.config["tunnels"]:
             self.config["tunnels"][tunnel_id]["status"] = status
             if pid is not None:
                 self.config["tunnels"][tunnel_id]["pid"] = pid
+                self.config["tunnels"][tunnel_id]["process_info"]["main_pid"] = pid
+            
+            # Update process table
+            self._update_tunnel_process_info(tunnel_id, status, pid)
             self.save_config()
     
     def update_server_status(self, server_id: str, status: str):
@@ -214,21 +257,28 @@ class ConfigManager:
             self.config["servers"][server_id]["last_check"] = datetime.now().isoformat()
             self.save_config()
     
+    def update_server_capabilities(self, server_id: str, capabilities: Dict):
+        """Update server capabilities (e.g., socat availability)"""
+        if server_id in self.config["servers"]:
+            self.config["servers"][server_id]["capabilities"].update(capabilities)
+            self.save_config()
+    
     def log_event(self, table: str, **kwargs):
-        """Log an event to database"""
+        """Log an event to database with UDP support"""
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
         
         if table == "tunnel_logs":
             cursor.execute('''
-                INSERT INTO tunnel_logs (tunnel_id, event_type, message, bytes_sent, bytes_received)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO tunnel_logs (tunnel_id, event_type, message, bytes_sent, bytes_received, tunnel_type)
+                VALUES (?, ?, ?, ?, ?, ?)
             ''', (
                 kwargs.get("tunnel_id"),
                 kwargs.get("event_type"),
                 kwargs.get("message", ""),
                 kwargs.get("bytes_sent", 0),
-                kwargs.get("bytes_received", 0)
+                kwargs.get("bytes_received", 0),
+                kwargs.get("tunnel_type", "tcp")
             ))
         elif table == "server_logs":
             cursor.execute('''
@@ -242,14 +292,47 @@ class ConfigManager:
             ))
         elif table == "bandwidth_stats":
             cursor.execute('''
-                INSERT INTO bandwidth_stats (tunnel_id, bytes_in, bytes_out, duration)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO bandwidth_stats (tunnel_id, bytes_in, bytes_out, duration, tunnel_type)
+                VALUES (?, ?, ?, ?, ?)
             ''', (
                 kwargs.get("tunnel_id"),
                 kwargs.get("bytes_in", 0),
                 kwargs.get("bytes_out", 0),
-                kwargs.get("duration", 60)
+                kwargs.get("duration", 60),
+                kwargs.get("tunnel_type", "tcp")
             ))
+        
+        conn.commit()
+        conn.close()
+    
+    def _update_tunnel_process_info(self, tunnel_id: str, status: str, pid: Optional[int]):
+        """Update tunnel process information in database"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        tunnel = self.get_tunnel(tunnel_id)
+        if not tunnel:
+            conn.close()
+            return
+        
+        tunnel_type = tunnel.get("tunnel_type", "tcp")
+        helper_pids = json.dumps(tunnel.get("process_info", {}).get("helper_pids", []))
+        
+        cursor.execute('''
+            INSERT OR REPLACE INTO tunnel_processes 
+            (tunnel_id, main_pid, helper_pids, tunnel_type, status, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (tunnel_id, pid, helper_pids, tunnel_type, status, datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+    
+    def _remove_tunnel_process_info(self, tunnel_id: str):
+        """Remove tunnel process information from database"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM tunnel_processes WHERE tunnel_id = ?', (tunnel_id,))
         
         conn.commit()
         conn.close()
@@ -260,7 +343,7 @@ class ConfigManager:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT timestamp, bytes_in, bytes_out, duration
+            SELECT timestamp, bytes_in, bytes_out, duration, tunnel_type
             FROM bandwidth_stats
             WHERE tunnel_id = ? AND timestamp >= datetime('now', '-{} hours')
             ORDER BY timestamp DESC
@@ -272,11 +355,37 @@ class ConfigManager:
                 "timestamp": row[0],
                 "bytes_in": row[1],
                 "bytes_out": row[2],
-                "duration": row[3]
+                "duration": row[3],
+                "tunnel_type": row[4]
             })
         
         conn.close()
         return stats
+    
+    def get_active_processes(self) -> List[Dict]:
+        """Get all active tunnel processes"""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT tunnel_id, main_pid, helper_pids, tunnel_type, status, updated_at
+            FROM tunnel_processes
+            WHERE status = 'active'
+        ''')
+        
+        processes = []
+        for row in cursor.fetchall():
+            processes.append({
+                "tunnel_id": row[0],
+                "main_pid": row[1],
+                "helper_pids": json.loads(row[2]) if row[2] else [],
+                "tunnel_type": row[3],
+                "status": row[4],
+                "updated_at": row[5]
+            })
+        
+        conn.close()
+        return processes
     
     def export_config(self, export_path: str, password: Optional[str] = None) -> bool:
         """Export configuration to file"""
@@ -284,7 +393,11 @@ class ConfigManager:
             export_data = {
                 "pasrah_version": self.config["version"],
                 "export_date": datetime.now().isoformat(),
-                "config": self.config
+                "config": self.config,
+                "features": {
+                    "udp_support": True,
+                    "enhanced_monitoring": True
+                }
             }
             
             data_json = json.dumps(export_data, indent=2)
@@ -331,11 +444,42 @@ class ConfigManager:
             
             # Import new config
             self.config = import_data["config"]
+            
+            # Ensure compatibility with new features
+            self._upgrade_config_format()
+            
             return self.save_config()
             
         except Exception as e:
             print(f"Import failed: {e}")
             return False
+    
+    def _upgrade_config_format(self):
+        """Upgrade old config format to support new features"""
+        # Add UDP support fields to existing tunnels
+        for tunnel_id, tunnel in self.config["tunnels"].items():
+            if "tunnel_type" not in tunnel:
+                tunnel["tunnel_type"] = "tcp"
+            if "process_info" not in tunnel:
+                tunnel["process_info"] = {
+                    "main_pid": tunnel.get("pid"),
+                    "helper_pids": [],
+                    "intermediate_ports": []
+                }
+        
+        # Add capabilities to existing servers
+        for server_id, server in self.config["servers"].items():
+            if "capabilities" not in server:
+                server["capabilities"] = {
+                    "socat_installed": False,
+                    "udp_support": False
+                }
+        
+        # Update settings
+        if "support_udp_tunnels" not in self.config["settings"]:
+            self.config["settings"]["support_udp_tunnels"] = True
+        if "socat_path" not in self.config["settings"]:
+            self.config["settings"]["socat_path"] = "/usr/bin/socat"
     
     def _hash_password(self, password: str) -> str:
         """Hash password for storage"""
@@ -358,15 +502,17 @@ if __name__ == "__main__":
         "password": "mypassword"
     })
     
-    # Add a tunnel
-    config.add_tunnel("tunnel1", {
-        "name": "MTProxy Tunnel",
+    # Add a UDP tunnel
+    config.add_tunnel("udp_tunnel1", {
+        "name": "Gaming Tunnel",
         "server_id": "server1",
-        "local_port": 444,
-        "remote_port": 444,
-        "description": "Telegram MTProxy tunnel"
+        "local_port": 7777,
+        "remote_port": 7777,
+        "tunnel_type": "udp",
+        "description": "UDP tunnel for gaming"
     })
     
-    print("Configuration manager initialized!")
+    print("Enhanced Configuration manager initialized!")
     print(f"Servers: {len(config.get_servers())}")
     print(f"Tunnels: {len(config.get_tunnels())}")
+    print(f"UDP Support: {config.config['settings']['support_udp_tunnels']}")
